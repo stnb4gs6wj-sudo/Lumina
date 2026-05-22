@@ -602,6 +602,26 @@
       getUid:  () => uid,
     };
 
+    /* ── Daten laden und App neu rendern ── */
+    async function loadAndRender(userId) {
+      const data = await loadAllFromFirestore(userId);
+
+      if (typeof loadStoreFromFirebase === 'function') {
+        if (data) {
+          if (data.decks)    window._store_decks    = data.decks;
+          if (data.settings) window._store_settings = data.settings;
+          if (data.exams)    window._store_exams     = data.exams;
+          if (data.garden)   window._store_garden    = data.garden;
+          if (data.activity) window._store_activity  = data.activity;
+        }
+        await loadStoreFromFirebase();
+      }
+
+      if (typeof switchView === 'function') {
+        switchView(typeof currentView !== 'undefined' ? currentView : 'home');
+      }
+    }
+
     /* ── Auth-Zustand überwachen ── */
     onAuthStateChanged(auth, async (user) => {
       if (!user) {
@@ -612,32 +632,37 @@
       uid = user.uid;
       hideLoginScreen();
 
-      // Name in Sync-Anzeige
       const statusEl = document.getElementById('sync-status');
       if (statusEl) statusEl.textContent = user.displayName || 'Verbunden';
 
       console.log('[Lumina] Eingeloggt:', user.displayName, uid);
 
-      // Daten aus Firebase laden
-      const data = await loadAllFromFirestore(uid);
+      // Beim Start: Daten laden
+      await loadAndRender(uid);
 
-      // data.js Store befüllen
-      if (typeof loadStoreFromFirebase === 'function') {
-        if (data) {
-          // Daten direkt übergeben (schneller als nochmal laden)
-          if (data.decks)    window._store_decks    = data.decks;
-          if (data.settings) window._store_settings = data.settings;
-          if (data.exams)    window._store_exams     = data.exams;
-          if (data.garden)   window._store_garden    = data.garden;
-          if (data.activity) window._store_activity  = data.activity;
+      // ── AUTOMATISCHER REFRESH ──────────────────────────────
+      // Alle 30 Sekunden neu laden wenn die App im Vordergrund ist.
+      // So sieht man Änderungen vom anderen Gerät spätestens nach 30 Sek.
+      setInterval(async () => {
+        // Nur refreshen wenn kein Modal offen und kein Lernmodus aktiv
+        const learnOverlay = document.getElementById('learn-overlay');
+        const anyModal = document.querySelector('.modal-overlay:not(.hidden)');
+        if (learnOverlay && !learnOverlay.classList.contains('hidden')) return;
+        if (anyModal) return;
+
+        console.log('[Lumina Sync] Auto-Refresh...');
+        await loadAndRender(uid);
+      }, 30000);
+
+      // ── REFRESH WENN APP WIEDER IN VORDERGRUND KOMMT ──────
+      // Wenn du vom iPhone zum MacBook wechselst und die App wieder
+      // öffnest, werden sofort die neuesten Daten geladen.
+      document.addEventListener('visibilitychange', async () => {
+        if (document.visibilityState === 'visible' && uid) {
+          console.log('[Lumina Sync] App wieder aktiv — lade Daten...');
+          await loadAndRender(uid);
         }
-        await loadStoreFromFirebase();
-      }
-
-      // App rendern
-      if (typeof switchView === 'function') {
-        switchView('home');
-      }
+      });
     });
 
     console.log('[Lumina] Firebase bereit ✦');
