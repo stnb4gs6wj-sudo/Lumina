@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Hintergrund -->
+  <rect width="512" height="512" rx="115" fill="#0f0e1a"/>
+
+  <!-- Äußerer Lila-Ring -->
+  <circle cx="256" cy="256" r="180" fill="none" stroke="#9b7fe8" stroke-width="12" opacity="0.3"/>
+
+  <!-- Mittlerer Ring -->
+  <circle cx="256" cy="256" r="140" fill="none" stroke="#b8a0f0" stroke-width="6" opacity="0.5"/>
+
+  <!-- Stern-Symbol ✦ -->
+  <text x="256" y="310"
+        font-family="Georgia, serif"
+        font-size="200"
+        text-anchor="middle"
+        fill="#9b7fe8"
+        opacity="0.95">✦</text>
+
+  <!-- Glüh-Effekt -->
+  <circle cx="256" cy="256" r="90" fill="#9b7fe8" opacity="0.08"/>
+
+  <!-- Schriftzug unten -->
+  <text x="256" y="460"
+        font-family="Georgia, serif"
+        font-size="52"
+        font-weight="300"
+        text-anchor="middle"
+        fill="#b8a0f0"
+        letter-spacing="8"
+        opacity="0.85">LUMINA</text>
+</svg>
