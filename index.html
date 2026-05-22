@@ -442,14 +442,13 @@
 
   <!-- Firebase SDK (über CDN — kein Build-Tool nötig) -->
   <script type="module">
-    import { initializeApp }        from "https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js";
+    import { initializeApp }          from "https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js";
     import { getFirestore,
-             doc, setDoc, getDoc,
-             collection, getDocs,
-             deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js";
+             doc, setDoc, getDoc }    from "https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js";
     import { getAuth,
-             signInAnonymously,
-             onAuthStateChanged }    from "https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js";
+             GoogleAuthProvider,
+             signInWithPopup,
+             onAuthStateChanged }     from "https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js";
 
     /* ── Firebase-Konfiguration ── */
     const firebaseConfig = {
@@ -466,35 +465,102 @@
     const firebaseApp = initializeApp(firebaseConfig);
     const db          = getFirestore(firebaseApp);
     const auth        = getAuth(firebaseApp);
+    const provider    = new GoogleAuthProvider();
 
     /* ══════════════════════════════════════════════════════
        SYNC-MODUL
        Alle Lumina-Daten werden unter:
          /users/{uid}/data/{key}
        in Firestore gespeichert.
-       Das spiegelt exakt die localStorage-Struktur.
+       Durch Google-Login ist die UID auf allen Geräten
+       identisch — das ermöglicht echte Synchronisierung.
     ══════════════════════════════════════════════════════ */
 
     let currentUid = null;
 
-    /* ── Anonym einloggen (kein Konto nötig) ── */
-    signInAnonymously(auth).catch(err => {
-      console.warn('[Lumina Sync] Anmeldung fehlgeschlagen:', err.message);
-    });
+    /* ── Login-Banner erstellen ── */
+    function createLoginBanner() {
+      // Nicht doppelt erstellen
+      if (document.getElementById('lumina-login-banner')) return;
 
+      const banner = document.createElement('div');
+      banner.id = 'lumina-login-banner';
+      banner.innerHTML = `
+        <div style="
+          position:fixed; inset:0; z-index:9999;
+          background:var(--bg-base);
+          display:flex; flex-direction:column;
+          align-items:center; justify-content:center;
+          gap:1.5rem; font-family:'DM Sans',sans-serif;
+        ">
+          <div style="font-size:3rem;">✦</div>
+          <h1 style="
+            font-family:'Cormorant Garamond',serif;
+            font-size:2.5rem; font-weight:400;
+            color:var(--text-primary); margin:0;
+          ">Lumina</h1>
+          <p style="color:var(--text-muted); font-size:0.9rem; margin:0; text-align:center; max-width:280px;">
+            Melde dich mit deinem Google-Konto an,<br>damit deine Daten auf allen Geräten synchronisiert werden.
+          </p>
+          <button id="google-login-btn" style="
+            background:#9b7fe8; color:#fff;
+            border:none; border-radius:999px;
+            padding:0.75rem 2rem; font-size:1rem;
+            font-family:'DM Sans',sans-serif;
+            cursor:pointer; font-weight:500;
+            box-shadow:0 4px 16px rgba(155,127,232,0.3);
+            transition:background 0.2s;
+          ">
+            Mit Google anmelden
+          </button>
+          <p style="color:var(--text-muted); font-size:0.75rem; margin:0;">
+            Kostenlos · Keine Werbung · Nur deine Daten
+          </p>
+        </div>
+      `;
+      document.body.appendChild(banner);
+
+      document.getElementById('google-login-btn').addEventListener('click', async () => {
+        try {
+          await signInWithPopup(auth, provider);
+          // onAuthStateChanged übernimmt den Rest
+        } catch (err) {
+          console.warn('[Lumina] Login fehlgeschlagen:', err.message);
+          alert('Anmeldung fehlgeschlagen. Bitte versuche es erneut.');
+        }
+      });
+    }
+
+    /* ── Login-Banner entfernen ── */
+    function removeLoginBanner() {
+      const banner = document.getElementById('lumina-login-banner');
+      if (banner) banner.remove();
+    }
+
+    /* ── Auth-Zustand überwachen ── */
     onAuthStateChanged(auth, async (user) => {
-      if (!user) return;
+      if (!user) {
+        // Nicht eingeloggt → Login-Banner zeigen
+        createLoginBanner();
+        return;
+      }
+
+      // Eingeloggt → Banner entfernen
+      removeLoginBanner();
       currentUid = user.uid;
 
-      // UID im localStorage speichern (für Wiedererkennung)
-      localStorage.setItem('lumina_uid', currentUid);
+      // Sync-Status aktualisieren
+      const statusEl = document.getElementById('sync-status');
+      if (statusEl) {
+        statusEl.textContent = user.displayName || 'Verbunden';
+      }
 
-      console.log('[Lumina Sync] Eingeloggt als:', currentUid);
+      console.log('[Lumina Sync] Eingeloggt als:', user.displayName, '(' + currentUid + ')');
 
-      // Beim ersten Laden: Daten aus Firestore holen und lokal speichern
+      // Beim ersten Laden: Daten aus Firestore holen
       await pullFromFirestore();
 
-      // Danach: App starten (falls noch nicht gestartet)
+      // App starten
       if (window.__luminaReady) {
         window.__luminaReady();
       } else {
