@@ -568,6 +568,671 @@
       }
     });
 
+    /* ══════════════════════════════════════════════════════
+       SYNC-KEYS: Diese localStorage-Keys werden synchronisiert
+    ══════════════════════════════════════════════════════ */
+    const SYNC_KEYS = new Set([
+      'lumina_decks',
+      'lumina_settings',
+      'lumina_exams',
+      'lumina_garden',
+      'lumina_activity',
+    ]);
+
+    /* ── Alle Daten von Firestore → localStorage laden ── */
+    async function pullFromFirestore() {
+      if (!currentUid) return;
+
+      // Sync-Anzeige
+      updateSyncDot('syncing');
+
+      try {
+        let didUpdate = false;
+
+        for (const key of SYNC_KEYS) {
+          const ref  = doc(db, 'users', currentUid, 'data', key);
+          const snap = await getDoc(ref);
+
+          if (snap.exists()) {
+            const remoteData = snap.data().value;
+            const remoteTs   = snap.data().updatedAt || 0;
+            const localRaw   = localStorage.getItem(key);
+            const localTs    = localStorage.getItem(key + '_ts')
+                               ? parseInt(localStorage.getItem(key + '_ts'))
+                               : 0;
+
+            // Firestore gewinnt wenn:
+            // 1. Lokal gar nichts gespeichert ist
+            // 2. Firestore-Daten neuer sind als lokale Daten
+            if (!localRaw || remoteTs > localTs) {
+              // Direkt in localStorage schreiben (OHNE den gepatchten setItem)
+              // damit wir keine Endlosschleife erzeugen
+              _originalSetItem(key, JSON.stringify(remoteData));
+              _originalSetItem(key + '_ts', remoteTs.toString());
+              didUpdate = true;
+              console.log('[Lumina Sync] Aktualisiert:', key, '(Firestore neuer)');
+            }
+          }
+        }
+
+        updateSyncDot('connected');
+        console.log('[Lumina Sync] Pull abgeschlossen. Aktualisierungen:', didUpdate);
+
+        // Wenn Daten aktualisiert wurden: App neu rendern
+        if (didUpdate && typeof switchView === 'function') {
+          switchView(currentView || 'home');
+          if (typeof renderHome === 'function') renderHome();
+        }
+
+      } catch (err) {
+        updateSyncDot('error');
+        console.warn('[Lumina Sync] Pull fehlgeschlagen:', err.message);
+      }
+    }
+
+    /* ── Einen einzelnen Key zu Firestore hochladen ── */
+    async function pushToFirestore(key, value) {
+      if (!currentUid) return;
+      const now = Date.now();
+      try {
+        const ref = doc(db, 'users', currentUid, 'data', key);
+        await setDoc(ref, {
+          value:     value,
+          updatedAt: now,
+        });
+        // Lokalen Timestamp aktualisieren
+        _originalSetItem(key + '_ts', now.toString());
+        updateSyncDot('connected');
+      } catch (err) {
+        updateSyncDot('error');
+        console.warn('[Lumina Sync] Push fehlgeschlagen:', key, err.message);
+      }
+    }
+
+    /* ── localStorage.setItem patchen ── */
+    // Jede Speicherung wird automatisch zu Firestore hochgeladen.
+    const _originalSetItem = localStorage.setItem.bind(localStorage);
+    localStorage.setItem = function(key, value) {
+      _originalSetItem(key, value);
+      // Nur Lumina-Keys syncen, keine internen Timestamp-Keys
+      if (SYNC_KEYS.has(key) && currentUid) {
+        try {
+          pushToFirestore(key, JSON.parse(value));
+        } catch (e) {
+          // Kein gültiges JSON — ignorieren
+        }
+      }
+    };
+
+    /* ── Sync-Punkt-Anzeige ── */
+    function updateSyncDot(state) {
+      const dot    = document.getElementById('sync-dot');
+      const status = document.getElementById('sync-status');
+      if (!dot || !status) return;
+
+      const states = {
+        connected: { color: 'var(--success)',  text: 'Synchronisiert' },
+        syncing:   { color: 'var(--warning)',   text: 'Synchronisiere…' },
+        error:     { color: 'var(--danger)',    text: 'Sync-Fehler' },
+      };
+
+      const s = states[state] || states.connected;
+      dot.style.color    = s.color;
+      status.textContent = s.text;
+    }
+
+    /* ── Manueller Sync-Button (für spätere Erweiterung) ── */
+    window.luminaSync = {
+      push: pushToFirestore,
+      pull: pullFromFirestore,
+      getUid: () => currentUid,
+    };
+
+    console.log('[Lumina Sync] Firebase-Modul geladen ✦');
+  </script>
+
+  <!-- Scripts (modular) — werden nach Firebase geladen -->
+  <script src="data.js"></script>
+  <script src="ui.js"></script>
+  <script src="learn.js"></script>
+  <script src="garden.js"></script>
+  <script src="import-export.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
+    <div class="learn-stage">
+      <div class="flashcard-3d" id="flashcard-3d">
+        <div class="flashcard-face flashcard-front">
+          <p class="card-label">Frage</p>
+          <h2 class="card-text" id="card-front-text">–</h2>
+        </div>
+        <div class="flashcard-face flashcard-back">
+          <p class="card-label">Antwort</p>
+          <h2 class="card-text" id="card-back-text">–</h2>
+        </div>
+      </div>
+      <p class="flip-hint">Klicken zum Umdrehen</p>
+    </div>
+
+    <div class="learn-rating hidden" id="learn-rating">
+      <p class="rating-label">Wie gut wusstest du das?</p>
+      <div class="rating-buttons">
+        <button class="btn-rate btn-easy"   data-rating="easy">   ✦ Leicht  </button>
+        <button class="btn-rate btn-medium" data-rating="medium"> ◈ Mittel  </button>
+        <button class="btn-rate btn-hard"   data-rating="hard">   ◆ Schwer  </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════
+       SIDEBAR / NAV
+  ═══════════════════════════════════════════════ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-logo">
+      <span class="logo-icon">✦</span>
+      <span class="logo-text">Lumina</span>
+    </div>
+
+    <nav class="sidebar-nav">
+      <a href="#" class="nav-item active" data-view="home">
+        <span class="nav-icon">⌂</span>
+        <span class="nav-label">Startseite</span>
+      </a>
+      <a href="#" class="nav-item" data-view="library">
+        <span class="nav-icon">◧</span>
+        <span class="nav-label">Bibliothek</span>
+      </a>
+      <a href="#" class="nav-item" data-view="progress">
+        <span class="nav-icon">◉</span>
+        <span class="nav-label">Fortschritt</span>
+      </a>
+      <a href="#" class="nav-item" data-view="garden">
+        <span class="nav-icon">✿</span>
+        <span class="nav-label">Garten</span>
+      </a>
+      <a href="#" class="nav-item" data-view="settings">
+        <span class="nav-icon">⚙</span>
+        <span class="nav-label">Einstellungen</span>
+      </a>
+    </nav>
+
+    <div class="sidebar-streak">
+      <span class="streak-flame">🔥</span>
+      <span class="streak-count" id="sidebar-streak">0</span>
+      <span class="streak-label">Tage Streak</span>
+    </div>
+
+    <!-- Sync-Status Indikator -->
+    <div class="sync-indicator">
+      <span class="sync-dot" id="sync-dot">●</span>
+      <span class="sync-status" id="sync-status">Verbinden…</span>
+    </div>
+  </aside>
+
+  <!-- Mobile Nav Toggle -->
+  <button class="mobile-nav-toggle" id="mobile-nav-toggle">☰</button>
+
+  <!-- ═══════════════════════════════════════════════
+       MAIN CONTENT AREA
+  ═══════════════════════════════════════════════ -->
+  <main class="main-content" id="main-content">
+
+    <!-- ─── VIEW: STARTSEITE ─────────────────────── -->
+    <section class="view active" id="view-home">
+      <div class="view-header">
+        <div>
+          <h1 class="view-title" id="home-greeting">Guten Morgen ✦</h1>
+          <p class="view-subtitle" id="home-date">Lade…</p>
+        </div>
+        <div class="header-actions">
+          <button class="btn-icon" id="theme-toggle" title="Theme wechseln">◑</button>
+        </div>
+      </div>
+
+      <!-- Motivations-Banner -->
+      <div class="motivation-banner" id="motivation-banner">
+        <span class="motivation-icon">✦</span>
+        <p class="motivation-text" id="motivation-text">Lade Motivation…</p>
+      </div>
+
+      <!-- Stats-Row -->
+      <div class="stats-row">
+        <div class="stat-card">
+          <span class="stat-icon">🔥</span>
+          <span class="stat-value" id="stat-streak">0</span>
+          <span class="stat-label">Tage Streak</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-icon">◈</span>
+          <span class="stat-value" id="stat-cards-today">0</span>
+          <span class="stat-label">Heute gelernt</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-icon">✿</span>
+          <span class="stat-value" id="stat-flowers">0</span>
+          <span class="stat-label">Blumen</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-icon">◧</span>
+          <span class="stat-value" id="stat-total-decks">0</span>
+          <span class="stat-label">Stapel gesamt</span>
+        </div>
+      </div>
+
+      <!-- Zwei-Spalten: Tagesziel + Klausur-Countdown -->
+      <div class="home-grid">
+
+        <!-- Tagesziel -->
+        <div class="card-panel">
+          <h3 class="panel-title">Tagesziel</h3>
+          <div class="daily-goal-ring">
+            <svg viewBox="0 0 120 120" class="ring-svg">
+              <circle cx="60" cy="60" r="52" class="ring-track"/>
+              <circle cx="60" cy="60" r="52" class="ring-fill" id="goal-ring-fill"
+                      stroke-dasharray="326.7"
+                      stroke-dashoffset="326.7"/>
+            </svg>
+            <div class="ring-label">
+              <span class="ring-value" id="goal-done">0</span>
+              <span class="ring-total" id="goal-total">/ 20</span>
+            </div>
+          </div>
+          <p class="panel-sub">Karten bis zum Ziel</p>
+          <div class="goal-input-row">
+            <input type="number" id="goal-input" class="input-sm" value="20" min="1" max="999" />
+            <button class="btn-sm" id="goal-save">Speichern</button>
+          </div>
+        </div>
+
+        <!-- Klausur-Countdown -->
+        <div class="card-panel">
+          <h3 class="panel-title">Nächste Klausur</h3>
+          <div id="exam-display">
+            <p class="exam-countdown" id="exam-days">– Tage</p>
+            <p class="exam-name" id="exam-name-display">Keine eingetragen</p>
+          </div>
+          <div class="exam-form">
+            <input type="text"  id="exam-name-input" class="input-sm" placeholder="Klausurname" />
+            <input type="date"  id="exam-date-input" class="input-sm" />
+            <button class="btn-sm" id="exam-save">Eintragen</button>
+          </div>
+          <div id="exam-list" class="exam-list"></div>
+        </div>
+
+      </div>
+
+      <!-- Schwierige Karten -->
+      <div class="card-panel" style="margin-top:1.5rem">
+        <h3 class="panel-title">Schwierigste Karten</h3>
+        <div id="hard-cards-list" class="hard-cards-list">
+          <p class="empty-hint">Noch keine Bewertungen vorhanden.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── VIEW: BIBLIOTHEK ──────────────────────── -->
+    <section class="view" id="view-library">
+      <div class="view-header">
+        <div>
+          <h1 class="view-title">Bibliothek</h1>
+          <p class="view-subtitle">Deine Karteikarten-Sammlung</p>
+        </div>
+        <div class="header-actions">
+          <button class="btn-outline" id="import-btn">↑ Import</button>
+          <button class="btn-outline" id="export-btn">↓ Export</button>
+          <button class="btn-primary" id="create-deck-btn">+ Neuer Stapel</button>
+        </div>
+      </div>
+
+      <!-- Such- und Filterzeile -->
+      <div class="search-filter-row">
+        <div class="search-wrap">
+          <span class="search-icon">⌕</span>
+          <input type="text" id="search-input" class="search-input" placeholder="Stapel oder Karte suchen…" />
+        </div>
+        <select class="select-sm" id="sort-select">
+          <option value="name">Nach Name</option>
+          <option value="recent">Zuletzt geöffnet</option>
+          <option value="cards">Anzahl Karten</option>
+        </select>
+      </div>
+
+      <!-- Decks Grid -->
+      <div class="decks-grid" id="decks-grid">
+        <!-- Dynamisch befüllt -->
+      </div>
+
+      <!-- Leer-State -->
+      <div class="empty-state hidden" id="library-empty">
+        <span class="empty-icon">◧</span>
+        <h3>Noch keine Stapel</h3>
+        <p>Erstelle deinen ersten Karteikarten-Stapel.</p>
+        <button class="btn-primary" id="create-deck-btn-2">+ Neuer Stapel</button>
+      </div>
+    </section>
+
+    <!-- ─── VIEW: FORTSCHRITT ─────────────────────── -->
+    <section class="view" id="view-progress">
+      <div class="view-header">
+        <h1 class="view-title">Fortschritt</h1>
+        <p class="view-subtitle">Deine Lernreise im Überblick</p>
+      </div>
+
+      <div class="progress-grid">
+
+        <div class="card-panel span-2">
+          <h3 class="panel-title">Wochenaktivität</h3>
+          <div class="week-chart" id="week-chart">
+            <!-- JS befüllt -->
+          </div>
+        </div>
+
+        <div class="card-panel">
+          <h3 class="panel-title">Gesamtstatistik</h3>
+          <ul class="stats-list" id="total-stats-list"></ul>
+        </div>
+
+        <div class="card-panel">
+          <h3 class="panel-title">Beste Streak</h3>
+          <div class="big-number" id="best-streak-display">0</div>
+          <p class="panel-sub">Tage in Folge</p>
+        </div>
+
+      </div>
+
+      <!-- Streak-Kalender -->
+      <div class="card-panel" style="margin-top:1.5rem">
+        <h3 class="panel-title">Lernkalender</h3>
+        <div class="streak-calendar" id="streak-calendar"></div>
+      </div>
+    </section>
+
+    <!-- ─── VIEW: GARTEN ──────────────────────────── -->
+    <section class="view" id="view-garden">
+      <div class="view-header">
+        <h1 class="view-title">Blumengarten ✿</h1>
+        <p class="view-subtitle">Dein Fortschritt blüht auf</p>
+      </div>
+
+      <div class="garden-intro card-panel">
+        <p>Für jeden <strong>5. Lerntag</strong> erhältst du eine neue Pflanze. Je mehr du lernst, desto mehr blüht dein Garten.</p>
+      </div>
+
+      <div class="garden-grid" id="garden-grid">
+        <!-- Dynamisch: Blumen-Kacheln -->
+      </div>
+    </section>
+
+    <!-- ─── VIEW: EINSTELLUNGEN ───────────────────── -->
+    <section class="view" id="view-settings">
+      <div class="view-header">
+        <h1 class="view-title">Einstellungen</h1>
+      </div>
+
+      <div class="settings-groups">
+
+        <div class="card-panel">
+          <h3 class="panel-title">Erscheinungsbild</h3>
+          <div class="setting-row">
+            <span>Theme</span>
+            <div class="toggle-group">
+              <button class="btn-toggle active" data-theme-btn="dark">Dunkel</button>
+              <button class="btn-toggle" data-theme-btn="light">Hell</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card-panel">
+          <h3 class="panel-title">Tagesziel</h3>
+          <div class="setting-row">
+            <span>Karten pro Tag</span>
+            <input type="number" id="settings-goal" class="input-sm" value="20" min="1" max="999" style="width:80px"/>
+          </div>
+          <button class="btn-sm" id="settings-goal-save" style="margin-top:.75rem">Speichern</button>
+        </div>
+
+        <div class="card-panel">
+          <h3 class="panel-title">Daten</h3>
+          <div class="setting-row">
+            <span>Alle Daten zurücksetzen</span>
+            <button class="btn-danger" id="reset-data-btn">Zurücksetzen</button>
+          </div>
+        </div>
+
+        <div class="card-panel">
+          <h3 class="panel-title">Über Lumina</h3>
+          <p class="panel-sub">Version 1.0 — Moderner Lernbegleiter für Universitätsstudierende.<br>Daten werden lokal im Browser gespeichert.</p>
+        </div>
+
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ═══════════════════════════════════════════════
+       MODAL: Neuen Stapel erstellen
+  ═══════════════════════════════════════════════ -->
+  <div class="modal-overlay hidden" id="modal-create-deck">
+    <div class="modal">
+      <h2 class="modal-title">Neuer Kartenstapel</h2>
+      <label class="form-label">Name des Stapels</label>
+      <input type="text" id="deck-name-input" class="input-full" placeholder="z. B. Anatomie – Kapitel 3" />
+      <label class="form-label">Beschreibung (optional)</label>
+      <input type="text" id="deck-desc-input" class="input-full" placeholder="Kurze Beschreibung" />
+      <label class="form-label">Farbe / Icon</label>
+      <div class="color-picker-row" id="color-picker-row">
+        <!-- JS befüllt -->
+      </div>
+      <div class="modal-actions">
+        <button class="btn-ghost" id="cancel-create-deck">Abbrechen</button>
+        <button class="btn-primary" id="confirm-create-deck">Erstellen</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════
+       MODAL: Deck-Detailansicht (Karten verwalten)
+  ═══════════════════════════════════════════════ -->
+  <div class="modal-overlay hidden" id="modal-deck-detail">
+    <div class="modal modal-wide">
+      <div class="modal-deck-header">
+        <div>
+          <h2 class="modal-title" id="deck-detail-title">Stapel</h2>
+          <p class="modal-sub" id="deck-detail-sub"></p>
+        </div>
+        <div class="modal-deck-actions">
+          <button class="btn-primary" id="start-learn-btn">▶ Lernen</button>
+          <button class="btn-ghost" id="close-deck-detail">✕</button>
+        </div>
+      </div>
+
+      <!-- Karten-Liste -->
+      <div class="cards-list" id="cards-list"></div>
+
+      <!-- Neue Karte hinzufügen -->
+      <div class="add-card-form">
+        <h4>Neue Karte hinzufügen</h4>
+        <div class="card-form-row">
+          <textarea id="new-card-front" class="input-full textarea-sm" placeholder="Frage / Vorderseite…" rows="2"></textarea>
+          <textarea id="new-card-back"  class="input-full textarea-sm" placeholder="Antwort / Rückseite…" rows="2"></textarea>
+        </div>
+        <button class="btn-sm" id="add-card-btn">+ Karte hinzufügen</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════
+       MODAL: Import
+  ═══════════════════════════════════════════════ -->
+  <div class="modal-overlay hidden" id="modal-import">
+    <div class="modal">
+      <h2 class="modal-title">Import</h2>
+      <p class="panel-sub">Importiere eine Textdatei mit Vokabeln oder Notizen. Das System erstellt automatisch Karteikarten.</p>
+      <div class="import-format-info">
+        <strong>Unterstützte Formate:</strong>
+        <ul>
+          <li>Zeile pro Karte: <code>Frage ; Antwort</code></li>
+          <li>Freitext: Wird automatisch in Q&amp;A aufgeteilt</li>
+          <li>JSON (Lumina-Format)</li>
+        </ul>
+      </div>
+      <label class="form-label">Ziel-Stapel (oder neu erstellen)</label>
+      <input type="text" id="import-deck-name" class="input-full" placeholder="Neuer Stapelname…" />
+      <label class="form-label" style="margin-top:1rem">Datei auswählen oder Text einfügen</label>
+      <input type="file" id="import-file" class="input-full" accept=".txt,.csv,.json" />
+      <textarea id="import-text" class="input-full textarea-sm" placeholder="Oder Text direkt einfügen…" rows="5" style="margin-top:.5rem"></textarea>
+      <div class="modal-actions">
+        <button class="btn-ghost" id="cancel-import">Abbrechen</button>
+        <button class="btn-primary" id="confirm-import">Importieren</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast-Notification -->
+  <div class="toast hidden" id="toast">
+    <span id="toast-msg">–</span>
+  </div>
+
+  <!-- Firebase SDK (über CDN — kein Build-Tool nötig) -->
+  <!-- Service Worker registrieren (PWA / Offline) -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js')
+          .then(reg => console.log('[Lumina] Service Worker registriert'))
+          .catch(err => console.warn('[Lumina] SW Fehler:', err));
+      });
+    }
+  </script>
+
+  <!-- Firebase SDK (über CDN — kein Build-Tool nötig) -->
+  <script type="module">
+    import { initializeApp }          from "https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js";
+    import { getFirestore,
+             doc, setDoc, getDoc }    from "https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js";
+    import { getAuth,
+             GoogleAuthProvider,
+             signInWithPopup,
+             onAuthStateChanged }     from "https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js";
+
+    /* ── Firebase-Konfiguration ── */
+    const firebaseConfig = {
+      apiKey:            "AIzaSyCpNLOnLURN3guJAgn0aLPseVu5V-Qay14",
+      authDomain:        "lumina-app-bb450.firebaseapp.com",
+      projectId:         "lumina-app-bb450",
+      storageBucket:     "lumina-app-bb450.firebasestorage.app",
+      messagingSenderId: "628210067497",
+      appId:             "1:628210067497:web:5bf942009d3320503e9438",
+      measurementId:     "G-WMLTQ8TSY5"
+    };
+
+    /* ── Firebase initialisieren ── */
+    const firebaseApp = initializeApp(firebaseConfig);
+    const db          = getFirestore(firebaseApp);
+    const auth        = getAuth(firebaseApp);
+    const provider    = new GoogleAuthProvider();
+
+    /* ══════════════════════════════════════════════════════
+       SYNC-MODUL
+       Alle Lumina-Daten werden unter:
+         /users/{uid}/data/{key}
+       in Firestore gespeichert.
+       Durch Google-Login ist die UID auf allen Geräten
+       identisch — das ermöglicht echte Synchronisierung.
+    ══════════════════════════════════════════════════════ */
+
+    let currentUid = null;
+
+    /* ── Login-Banner erstellen ── */
+    function createLoginBanner() {
+      // Nicht doppelt erstellen
+      if (document.getElementById('lumina-login-banner')) return;
+
+      const banner = document.createElement('div');
+      banner.id = 'lumina-login-banner';
+      banner.innerHTML = `
+        <div style="
+          position:fixed; inset:0; z-index:9999;
+          background:var(--bg-base);
+          display:flex; flex-direction:column;
+          align-items:center; justify-content:center;
+          gap:1.5rem; font-family:'DM Sans',sans-serif;
+        ">
+          <div style="font-size:3rem;">✦</div>
+          <h1 style="
+            font-family:'Cormorant Garamond',serif;
+            font-size:2.5rem; font-weight:400;
+            color:var(--text-primary); margin:0;
+          ">Lumina</h1>
+          <p style="color:var(--text-muted); font-size:0.9rem; margin:0; text-align:center; max-width:280px;">
+            Melde dich mit deinem Google-Konto an,<br>damit deine Daten auf allen Geräten synchronisiert werden.
+          </p>
+          <button id="google-login-btn" style="
+            background:#9b7fe8; color:#fff;
+            border:none; border-radius:999px;
+            padding:0.75rem 2rem; font-size:1rem;
+            font-family:'DM Sans',sans-serif;
+            cursor:pointer; font-weight:500;
+            box-shadow:0 4px 16px rgba(155,127,232,0.3);
+            transition:background 0.2s;
+          ">
+            Mit Google anmelden
+          </button>
+          <p style="color:var(--text-muted); font-size:0.75rem; margin:0;">
+            Kostenlos · Keine Werbung · Nur deine Daten
+          </p>
+        </div>
+      `;
+      document.body.appendChild(banner);
+
+      document.getElementById('google-login-btn').addEventListener('click', async () => {
+        try {
+          await signInWithPopup(auth, provider);
+          // onAuthStateChanged übernimmt den Rest
+        } catch (err) {
+          console.warn('[Lumina] Login fehlgeschlagen:', err.message);
+          alert('Anmeldung fehlgeschlagen. Bitte versuche es erneut.');
+        }
+      });
+    }
+
+    /* ── Login-Banner entfernen ── */
+    function removeLoginBanner() {
+      const banner = document.getElementById('lumina-login-banner');
+      if (banner) banner.remove();
+    }
+
+    /* ── Auth-Zustand überwachen ── */
+    onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        // Nicht eingeloggt → Login-Banner zeigen
+        createLoginBanner();
+        return;
+      }
+
+      // Eingeloggt → Banner entfernen
+      removeLoginBanner();
+      currentUid = user.uid;
+
+      // Sync-Status aktualisieren
+      const statusEl = document.getElementById('sync-status');
+      if (statusEl) {
+        statusEl.textContent = user.displayName || 'Verbunden';
+      }
+
+      console.log('[Lumina Sync] Eingeloggt als:', user.displayName, '(' + currentUid + ')');
+
+      // Beim ersten Laden: Daten aus Firestore holen
+      await pullFromFirestore();
+
+      // App starten
+      if (window.__luminaReady) {
+        window.__luminaReady();
+      } else {
+        window.__firebaseReady = true;
+      }
+    });
+
     /* ── Alle Daten von Firestore → localStorage laden ── */
     async function pullFromFirestore() {
       if (!currentUid) return;
