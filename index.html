@@ -632,13 +632,32 @@
       uid = user.uid;
       hideLoginScreen();
 
-      const statusEl = document.getElementById('sync-status');
-      if (statusEl) statusEl.textContent = user.displayName || 'Verbunden';
-
       console.log('[Lumina] Eingeloggt:', user.displayName, uid);
 
-      // Beim Start: Daten laden
+      // Beim Start: Daten laden und App rendern
       await loadAndRender(uid);
+
+      // Zeige kurz an mit welchem Konto eingeloggt wurde
+      // (hilft beim Prüfen ob alle Geräte dasselbe Konto nutzen)
+      setTimeout(() => {
+        const name = user.displayName || user.email || 'Anonym';
+        const shortUid = uid.slice(0, 6);
+        if (typeof showToast === 'function') {
+          showToast(`✦ Angemeldet als: ${name} (${shortUid})`, 4000);
+        }
+      }, 1200);
+
+      // Name und UID nach dem Rendern anzeigen
+      // Kurze Verzögerung damit die Sidebar sicher gerendert ist
+      setTimeout(() => {
+        const statusEl = document.getElementById('sync-status');
+        if (statusEl) {
+          // Zeige den Namen oder falls kein Name: die ersten 8 Zeichen der UID
+          statusEl.textContent = user.displayName
+            ? user.displayName
+            : (user.email || uid.slice(0, 8));
+        }
+      }, 800);
 
       // ── AUTOMATISCHER REFRESH ──────────────────────────────
       // Alle 30 Sekunden neu laden wenn die App im Vordergrund ist.
