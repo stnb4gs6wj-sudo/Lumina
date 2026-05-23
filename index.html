@@ -428,30 +428,34 @@
     <span id="toast-msg">–</span>
   </div>
 
-  <!-- Firebase SDK (über CDN — kein Build-Tool nötig) -->
-  <!-- Service Worker registrieren (PWA / Offline) -->
+  <!-- Service Worker -->
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
-        navigator.serviceWorker.register('./sw.js')
-          .then(reg => console.log('[Lumina] Service Worker registriert'))
-          .catch(err => console.warn('[Lumina] SW Fehler:', err));
+        navigator.serviceWorker.register('./sw.js').catch(() => {});
       });
     }
   </script>
 
-  <!-- Firebase SDK -->
+  <!-- Lumina App Scripts (werden zuerst geladen) -->
+  <script src="data.js"></script>
+  <script src="ui.js"></script>
+  <script src="learn.js"></script>
+  <script src="garden.js"></script>
+  <script src="import-export.js"></script>
+  <script src="script.js"></script>
+
+  <!-- Firebase SDK (nach App-Scripts, damit alle Funktionen verfügbar sind) -->
   <script type="module">
-    import { initializeApp }       from "https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js";
+    import { initializeApp }      from "https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js";
     import { getFirestore,
-             doc, setDoc,
-             getDoc, getDocs,
-             collection }          from "https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js";
+             doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js";
     import { getAuth,
              GoogleAuthProvider,
              signInWithPopup,
              onAuthStateChanged }  from "https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js";
 
+    /* ── Konfiguration ── */
     const firebaseConfig = {
       apiKey:            "AIzaSyCpNLOnLURN3guJAgn0aLPseVu5V-Qay14",
       authDomain:        "lumina-app-bb450.firebaseapp.com",
@@ -461,238 +465,180 @@
       appId:             "1:628210067497:web:5bf942009d3320503e9438",
     };
 
-    const app      = initializeApp(firebaseConfig);
-    const db       = getFirestore(app);
-    const auth     = getAuth(app);
+    const fbApp    = initializeApp(firebaseConfig);
+    const db       = getFirestore(fbApp);
+    const auth     = getAuth(fbApp);
     const provider = new GoogleAuthProvider();
+    let   uid      = null;
 
-    let uid = null;
-
-    /* ── Login-Screen ── */
-    function showLoginScreen() {
-      if (document.getElementById('lumina-login')) return;
-      const el = document.createElement('div');
-      el.id = 'lumina-login';
-      el.innerHTML = `
-        <div style="
-          position:fixed;inset:0;z-index:9999;
-          background:#0f0e1a;
-          display:flex;flex-direction:column;
-          align-items:center;justify-content:center;gap:1.5rem;
-          font-family:'DM Sans',sans-serif;
-        ">
-          <div style="font-size:3.5rem;filter:drop-shadow(0 0 20px #9b7fe8)">✦</div>
-          <h1 style="font-family:'Cormorant Garamond',serif;font-size:2.8rem;
-                     font-weight:400;color:#ede9f8;margin:0;letter-spacing:0.02em;">
-            Lumina
-          </h1>
-          <p style="color:#6b638a;font-size:0.9rem;margin:0;text-align:center;
-                    max-width:280px;line-height:1.6;">
-            Melde dich an, damit deine Karteikarten auf<br>
-            allen Geräten synchronisiert werden.
-          </p>
-          <button id="btn-google-login" style="
-            background:#9b7fe8;color:#fff;border:none;
-            border-radius:999px;padding:0.85rem 2.5rem;
-            font-size:1rem;font-family:'DM Sans',sans-serif;
-            cursor:pointer;font-weight:500;
-            box-shadow:0 4px 20px rgba(155,127,232,0.4);
-            transition:all 0.2s;
-          ">
-            ✦ Mit Google anmelden
-          </button>
-          <p id="login-error" style="color:#e87878;font-size:0.8rem;
-             margin:0;opacity:0;transition:opacity 0.3s;"></p>
-          <p style="color:#3a3550;font-size:0.72rem;margin:0;">
-            Kostenlos · Keine Werbung · Nur deine Daten
-          </p>
-        </div>
-      `;
-      document.body.appendChild(el);
-
-      const btn = document.getElementById('btn-google-login');
-      btn.addEventListener('mouseenter', () => { btn.style.background = '#b8a0f0'; });
-      btn.addEventListener('mouseleave', () => { btn.style.background = '#9b7fe8'; });
-      btn.addEventListener('click', async () => {
-        btn.textContent = 'Verbinde…';
-        btn.disabled = true;
-        try {
-          await signInWithPopup(auth, provider);
-        } catch(err) {
-          const errEl = document.getElementById('login-error');
-          if (errEl) { errEl.textContent = 'Anmeldung fehlgeschlagen. Bitte erneut versuchen.'; errEl.style.opacity = '1'; }
-          btn.textContent = '✦ Mit Google anmelden';
-          btn.disabled = false;
-        }
-      });
+    /* ── Sync-Anzeige ── */
+    function setSyncUI(state, name) {
+      const dot = document.getElementById('sync-dot');
+      const txt = document.getElementById('sync-status');
+      if (!dot || !txt) return;
+      if (state === 'ok')      { dot.style.color = '#7ec8a0'; txt.textContent = name || 'Synchronisiert'; }
+      if (state === 'syncing') { dot.style.color = '#e8c46a'; txt.textContent = 'Synchronisiere…'; }
+      if (state === 'error')   { dot.style.color = '#e87878'; txt.textContent = 'Fehler'; }
     }
 
-    function hideLoginScreen() {
-      const el = document.getElementById('lumina-login');
-      if (el) {
-        el.style.transition = 'opacity 0.4s';
-        el.style.opacity = '0';
-        setTimeout(() => el.remove(), 400);
+    /* ── Zu Firestore speichern ── */
+    async function fbSave(key, value) {
+      if (!uid) { console.warn('[FB] Kein UID — nicht gespeichert:', key); return; }
+      setSyncUI('syncing');
+      try {
+        await setDoc(doc(db, 'users', uid, 'data', key), {
+          value:   value,
+          savedAt: Date.now(),
+        });
+        setSyncUI('ok');
+        console.log('[FB] Gespeichert:', key);
+      } catch(e) {
+        setSyncUI('error');
+        console.error('[FB] Speichern fehlgeschlagen:', key, e);
       }
     }
 
     /* ── Alle Daten aus Firestore laden ── */
-    async function loadAllFromFirestore(userId) {
-      setSyncStatus('syncing');
+    async function fbLoadAll() {
+      if (!uid) return null;
+      setSyncUI('syncing');
       try {
         const keys = ['decks','settings','exams','garden','activity'];
         const result = {};
         for (const key of keys) {
-          const snap = await getDoc(doc(db, 'users', userId, 'data', key));
-          if (snap.exists()) {
-            result[key] = snap.data().value;
-          }
+          const snap = await getDoc(doc(db, 'users', uid, 'data', key));
+          if (snap.exists()) result[key] = snap.data().value;
         }
-        setSyncStatus('ok');
+        setSyncUI('ok');
+        console.log('[FB] Geladen:', Object.keys(result));
         return Object.keys(result).length > 0 ? result : null;
-      } catch(err) {
-        setSyncStatus('error');
-        console.warn('[Lumina Firebase] Load fehlgeschlagen:', err);
+      } catch(e) {
+        setSyncUI('error');
+        console.error('[FB] Laden fehlgeschlagen:', e);
         return null;
       }
     }
 
-    /* ── Einen Key zu Firestore speichern ── */
-    async function saveToFirestore(key, value) {
-      if (!uid) return;
-      try {
-        setSyncStatus('syncing');
-        await setDoc(doc(db, 'users', uid, 'data', key), {
-          value:     value,
-          savedAt:   Date.now(),
-        });
-        setSyncStatus('ok');
-      } catch(err) {
-        setSyncStatus('error');
-        console.warn('[Lumina Firebase] Save fehlgeschlagen:', key, err);
-      }
-    }
-
-    /* ── Sync-Status Anzeige ── */
-    function setSyncStatus(state) {
-      const dot = document.getElementById('sync-dot');
-      const txt = document.getElementById('sync-status');
-      if (!dot || !txt) return;
-      const map = {
-        ok:      { color: '#7ec8a0', text: 'Synchronisiert' },
-        syncing: { color: '#e8c46a', text: 'Synchronisiere…' },
-        error:   { color: '#e87878', text: 'Sync-Fehler'    },
-      };
-      const s = map[state] || map.ok;
-      dot.style.color    = s.color;
-      txt.textContent    = s.text;
-    }
-
-    /* ── Firebase-Bridge für data.js bereitstellen ── */
+    /* ── Firebase-Bridge für data.js ── */
     window._luminaFirebase = {
-      save: (key, value) => saveToFirestore(key, value),
-      load: async (key) => {
+      save:    fbSave,
+      load:    async (key) => {
         if (!uid) return null;
         try {
           const snap = await getDoc(doc(db, 'users', uid, 'data', key));
           return snap.exists() ? snap.data().value : null;
         } catch(e) { return null; }
       },
-      loadAll: () => uid ? loadAllFromFirestore(uid) : null,
+      loadAll: fbLoadAll,
       getUid:  () => uid,
     };
 
-    /* ── Daten laden und App neu rendern ── */
-    async function loadAndRender(userId) {
-      const data = await loadAllFromFirestore(userId);
+    /* ── App starten mit Firebase-Daten ── */
+    async function startApp(user) {
+      // 1. Daten aus Firebase laden
+      const data = await fbLoadAll();
 
-      if (typeof loadStoreFromFirebase === 'function') {
-        if (data) {
-          if (data.decks)    window._store_decks    = data.decks;
-          if (data.settings) window._store_settings = data.settings;
-          if (data.exams)    window._store_exams     = data.exams;
-          if (data.garden)   window._store_garden    = data.garden;
-          if (data.activity) window._store_activity  = data.activity;
+      // 2. In den Store laden
+      if (data) {
+        if (data.decks)    window._store_decks    = data.decks;
+        if (data.settings) window._store_settings = data.settings;
+        if (data.exams)    window._store_exams     = data.exams;
+        if (data.garden)   window._store_garden    = data.garden;
+        if (data.activity) window._store_activity  = data.activity;
+      }
+
+      // 3. Store initialisieren (data.js)
+      await loadStoreFromFirebase();
+
+      // 4. App-Theme anwenden
+      const settings = getSettings();
+      applyTheme(settings.theme || 'dark');
+
+      // 5. Startseite rendern
+      switchView('home');
+
+      // 6. Name anzeigen
+      setTimeout(() => {
+        setSyncUI('ok', user.displayName || user.email || 'Verbunden');
+        if (typeof showToast === 'function') {
+          showToast('✦ ' + (user.displayName || 'Angemeldet'), 2500);
         }
-        await loadStoreFromFirebase();
-      }
+      }, 500);
 
-      if (typeof switchView === 'function') {
-        switchView(typeof currentView !== 'undefined' ? currentView : 'home');
-      }
+      // 7. Auto-Refresh: Wenn App wieder in Vordergrund kommt
+      document.addEventListener('visibilitychange', async () => {
+        if (document.visibilityState === 'visible' && uid) {
+          await startApp(user);
+        }
+      });
+
+      // 8. Auto-Refresh alle 30 Sekunden
+      setInterval(async () => {
+        const overlay = document.getElementById('learn-overlay');
+        if (overlay && !overlay.classList.contains('hidden')) return;
+        await startApp(user);
+      }, 30000);
     }
 
-    /* ── Auth-Zustand überwachen ── */
+    /* ── Login-Screen ── */
+    function showLogin() {
+      if (document.getElementById('lumina-login')) return;
+      const el = document.createElement('div');
+      el.id = 'lumina-login';
+      el.innerHTML = `
+        <div style="position:fixed;inset:0;z-index:9999;background:#0f0e1a;
+          display:flex;flex-direction:column;align-items:center;
+          justify-content:center;gap:1.5rem;font-family:'DM Sans',sans-serif;">
+          <div style="font-size:3.5rem;filter:drop-shadow(0 0 20px #9b7fe8)">✦</div>
+          <h1 style="font-family:'Cormorant Garamond',serif;font-size:2.8rem;
+            font-weight:400;color:#ede9f8;margin:0;">Lumina</h1>
+          <p style="color:#6b638a;font-size:0.9rem;margin:0;text-align:center;
+            max-width:280px;line-height:1.6;">
+            Melde dich an, damit deine Karteikarten<br>auf allen Geräten synchronisiert werden.
+          </p>
+          <button id="btn-google-login" style="background:#9b7fe8;color:#fff;border:none;
+            border-radius:999px;padding:0.85rem 2.5rem;font-size:1rem;
+            font-family:'DM Sans',sans-serif;cursor:pointer;font-weight:500;
+            box-shadow:0 4px 20px rgba(155,127,232,0.4);">
+            ✦ Mit Google anmelden
+          </button>
+          <p id="login-err" style="color:#e87878;font-size:0.8rem;margin:0;opacity:0;"></p>
+        </div>`;
+      document.body.appendChild(el);
+
+      document.getElementById('btn-google-login').addEventListener('click', async () => {
+        const btn = document.getElementById('btn-google-login');
+        btn.textContent = 'Verbinde…';
+        btn.disabled = true;
+        try {
+          await signInWithPopup(auth, provider);
+        } catch(e) {
+          const err = document.getElementById('login-err');
+          if (err) { err.textContent = 'Anmeldung fehlgeschlagen — bitte erneut versuchen.'; err.style.opacity = '1'; }
+          btn.textContent = '✦ Mit Google anmelden';
+          btn.disabled = false;
+        }
+      });
+    }
+
+    /* ── Auth-Zustand ── */
     onAuthStateChanged(auth, async (user) => {
       if (!user) {
-        showLoginScreen();
+        showLogin();
         return;
       }
 
-      uid = user.uid;
-      hideLoginScreen();
+      // Login-Screen entfernen
+      const loginEl = document.getElementById('lumina-login');
+      if (loginEl) { loginEl.style.opacity = '0'; setTimeout(() => loginEl.remove(), 400); }
 
+      uid = user.uid;
       console.log('[Lumina] Eingeloggt:', user.displayName, uid);
 
-      // Beim Start: Daten laden und App rendern
-      await loadAndRender(uid);
-
-      // Zeige kurz an mit welchem Konto eingeloggt wurde
-      // (hilft beim Prüfen ob alle Geräte dasselbe Konto nutzen)
-      setTimeout(() => {
-        const name = user.displayName || user.email || 'Anonym';
-        const shortUid = uid.slice(0, 6);
-        if (typeof showToast === 'function') {
-          showToast(`✦ Angemeldet als: ${name} (${shortUid})`, 4000);
-        }
-      }, 1200);
-
-      // Name und UID nach dem Rendern anzeigen
-      // Kurze Verzögerung damit die Sidebar sicher gerendert ist
-      setTimeout(() => {
-        const statusEl = document.getElementById('sync-status');
-        if (statusEl) {
-          // Zeige den Namen oder falls kein Name: die ersten 8 Zeichen der UID
-          statusEl.textContent = user.displayName
-            ? user.displayName
-            : (user.email || uid.slice(0, 8));
-        }
-      }, 800);
-
-      // ── AUTOMATISCHER REFRESH ──────────────────────────────
-      // Alle 30 Sekunden neu laden wenn die App im Vordergrund ist.
-      // So sieht man Änderungen vom anderen Gerät spätestens nach 30 Sek.
-      setInterval(async () => {
-        // Nur refreshen wenn kein Modal offen und kein Lernmodus aktiv
-        const learnOverlay = document.getElementById('learn-overlay');
-        const anyModal = document.querySelector('.modal-overlay:not(.hidden)');
-        if (learnOverlay && !learnOverlay.classList.contains('hidden')) return;
-        if (anyModal) return;
-
-        console.log('[Lumina Sync] Auto-Refresh...');
-        await loadAndRender(uid);
-      }, 30000);
-
-      // ── REFRESH WENN APP WIEDER IN VORDERGRUND KOMMT ──────
-      // Wenn du vom iPhone zum MacBook wechselst und die App wieder
-      // öffnest, werden sofort die neuesten Daten geladen.
-      document.addEventListener('visibilitychange', async () => {
-        if (document.visibilityState === 'visible' && uid) {
-          console.log('[Lumina Sync] App wieder aktiv — lade Daten...');
-          await loadAndRender(uid);
-        }
-      });
+      // App starten
+      await startApp(user);
     });
 
-    console.log('[Lumina] Firebase bereit ✦');
   </script>
-
-  <!-- Scripts (modular) — werden nach Firebase geladen -->
-  <script src="data.js"></script>
-  <script src="ui.js"></script>
-  <script src="learn.js"></script>
-  <script src="garden.js"></script>
-  <script src="import-export.js"></script>
-  <script src="script.js"></script>
 </body>
 </html>
